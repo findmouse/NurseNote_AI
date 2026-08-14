@@ -1,0 +1,21 @@
+# --- Web ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- DB ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# --- 設定 / バリデーション ---
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- 認証 ---
+PyJWT==2.10.1
+bcrypt==4.2.1
+
+# --- LLM 層（M2 以降）---
+# requirements-llm.txt に分離した。LangChain は 1.2 系を使う。
+#   pip install -r requirements.txt -r requirements-llm.txt

@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- このプロジェクト固有 ---
+
+# PyCharm のプロジェクト設定（個人環境依存）
+.idea/
+
+# LangChain の学習用コード。アプリ本体ではないため公開リポジトリには含めない。
+# （API キーがハードコードされたファイルを含む）
+history/
+
+# git commit -F で使う一時的なコミットメッセージ
+commit-msg.txt

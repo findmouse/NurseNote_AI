@@ -1,0 +1,28 @@
+# NurseNote AI - LLM 層の依存（M2 以降）
+#
+# requirements.txt（Web / DB / 認証）とは分けている。
+# 理由: LLM 層は依存が重く（numpy / tiktoken / openai など）、
+#       M1 の API だけを動かしたい場合には不要なため。
+#
+# インストール:  pip install -r requirements.txt -r requirements-llm.txt
+#
+# LangChain は 1.2 系に固定する。1.0 で導入された middleware
+# （PIIMiddleware / SummarizationMiddleware / wrap_model_call など）を使うため、
+# 0.3 系には戻さない。1.3 系はまだ検証していないので上限を切っておく。
+
+# --- LangChain 本体 ---
+langchain>=1.2,<1.3
+# langchain-core / langgraph / langsmith は langchain の依存として入る
+
+# --- LLM プロバイダ ---
+# 既定は院内の Ollama（完全オフライン動作。ARCHITECTURE §5.6.6）
+langchain-ollama==1.1.0
+# 任意: クラウド。DeepSeek / Qwen は OpenAI 互換 API で利用できる
+langchain-openai==1.4.3
+langchain-deepseek==1.1.0
+
+# --- ベクトル検索（Few-shot 事例・用語集のリトリーバ）---
+# 注意: langchain-postgres は psycopg3 を使う。
+#       アプリ本体の asyncpg とは別のドライバが同居する形になる。
+langchain-postgres==0.0.17
+pgvector==0.3.6

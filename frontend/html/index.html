@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NurseNote AI - 看護記録作成支援</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- ビルド不要。読み込むのは Vue 3 だけ（HTTP 通信はブラウザ標準の fetch を使う） -->
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============================== ログイン画面 ============================== -->
+  <div v-if="!loggedIn" class="login-wrap">
+    <form class="login-card" @submit.prevent="login">
+      <h1>NurseNote <span>AI</span></h1>
+      <p class="subtitle">看護記録・退院サマリー作成支援システム</p>
+
+      <label>職員番号</label>
+      <input type="text" v-model="loginForm.employee_no" placeholder="N001" autocomplete="username">
+
+      <label>パスワード</label>
+      <input type="password" v-model="loginForm.password" placeholder="••••••••" autocomplete="current-password">
+
+      <p v-if="loginError" class="error">{{ loginError }}</p>
+
+      <button type="submit" :disabled="loading">
+        {{ loading ? 'ログイン中…' : 'ログイン' }}
+      </button>
+
+      <p class="demo-hint">
+        デモ用アカウント<br>
+        N001 / N002（3F東病棟）、N003（4F西病棟）、A001（管理者）<br>
+        パスワードはいずれも <code>nurse1234</code>
+      </p>
+    </form>
+  </div>
+
+  <!-- ============================== メイン画面 ============================== -->
+  <div v-else class="app-wrap">
+
+    <header class="topbar">
+      <div class="brand">NurseNote <span>AI</span></div>
+      <div class="user-info">
+        担当：{{ me.name }}（{{ me.ward }} / {{ me.employee_no }}）
+        <button class="link-btn" @click="logout">ログアウト</button>
+      </div>
+    </header>
+
+    <div class="body-wrap">
+
+      <!-- ---------------------- 左：担当患者一覧 ---------------------- -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-title">入院中の担当患者</span>
+          <button class="admit-btn" @click="openAdmit">＋ 新規入院</button>
+        </div>
+
+        <div class="search-box">
+          <input type="text" v-model="keyword" placeholder="氏名・カナ・患者番号"
+                 @keyup.enter="searchPatients">
+          <button @click="searchPatients">検索</button>
+        </div>
+
+        <div v-if="patients.length === 0" class="empty">
+          入院中の担当患者がいません
+        </div>
+
+        <ul class="patient-list">
+          <li v-for="p in patients" :key="p.id"
+              :class="{ active: selectedId === p.id }"
+              @click="selectPatient(p.id)">
+            <div class="row1">
+              <span class="pname">{{ p.name }}</span>
+              <span class="proom" v-if="p.current_admission">
+                {{ p.current_admission.room }}号室
+              </span>
+            </div>
+            <div class="row2">
+              {{ p.patient_no }}　{{ ageText(p.age) }} {{ p.sex }}
+            </div>
+            <div class="row3" v-if="p.current_admission">
+              {{ p.current_admission.diagnosis }}
+            </div>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- ---------------------- 右：メインパネル ---------------------- -->
+      <main class="main-panel">
+
+        <div v-if="!patient" class="placeholder">
+          左の一覧から患者を選択してください
+        </div>
+
+        <template v-else>
+          <!-- 患者ヘッダー -->
+          <section class="patient-header">
+            <div class="ph-main">
+              <h2>{{ patient.name }}
+                <small>（{{ patient.name_kana }}）</small>
+                <span class="badge">{{ ageText(patient.age) }} / {{ patient.sex }}</span>
+                <span class="badge st" :class="patient.admission_status">
+                  {{ admissionLabel(patient.admission_status) }}
+                </span>
+              </h2>
+              <div class="ph-sub">
+                患者番号 {{ patient.patient_no }}
+                <template v-if="adm">
+                  　|　{{ adm.ward }} {{ adm.room }}号室
+                  　|　入院日 {{ adm.admitted_at }}
+                  <template v-if="adm.status === 'active'">（{{ hospitalDays }}日目）</template>
+                  <template v-else>　|　退院日 {{ adm.discharged_at }}</template>
+                </template>
+              </div>
+              <div class="ph-sub" v-if="adm">
+                診断名：<strong>{{ adm.diagnosis }}</strong>
+                　|　主治医：{{ adm.attending_doctor }}
+              </div>
+            </div>
+            <div class="ph-side">
+              <div v-if="hasAllergy" class="alert-item allergy">
+                ⚠ アレルギー：{{ patient.assessment.allergies.join('、') }}
+              </div>
+              <div v-if="patient.assessment && patient.assessment.diet_restrictions"
+                   class="alert-item diet">
+                🍚 食事：{{ patient.assessment.diet_restrictions }}
+              </div>
+              <button v-if="adm && adm.status === 'active'"
+                      class="discharge-btn" @click="discharge">退院処理</button>
+            </div>
+          </section>
+
+          <!-- タブ -->
+          <nav class="tabs">
+            <button :class="{ on: tab === 'admission' }" @click="tab = 'admission'">
+              入院時情報
+            </button>
+            <button :class="{ on: tab === 'note' }" @click="tab = 'note'">
+              看護記録 ★
+            </button>
+            <button :class="{ on: tab === 'discharge' }" @click="tab = 'discharge'">
+              退院サマリー
+            </button>
+          </nav>
+
+          <!-- === タブ1：入院時情報 === -->
+          <section v-show="tab === 'admission'" class="tab-body">
+            <div v-if="!patient.assessment" class="empty">入院時情報は登録されていません</div>
+            <table v-else class="kv-table">
+              <tr><th>アレルギー</th>
+                  <td>{{ joinOr(patient.assessment.allergies, 'なし') }}</td></tr>
+              <tr><th>慢性疾患</th>
+                  <td>{{ joinOr(patient.assessment.chronic_diseases, 'なし') }}</td></tr>
+              <tr><th>食事禁忌</th>
+                  <td>{{ patient.assessment.diet_restrictions || '－' }}</td></tr>
+              <tr><th>既往歴</th>
+                  <td>{{ patient.assessment.past_history || '－' }}</td></tr>
+              <tr><th>現病歴</th>
+                  <td>{{ patient.assessment.present_illness || '－' }}</td></tr>
+              <tr><th>ADL</th>
+                  <td>{{ adlText }}</td></tr>
+            </table>
+            <p class="note-msg">※ 入院時情報の入力フォームは M4 で実装予定</p>
+          </section>
+
+          <!-- === タブ2：看護記録 === -->
+          <section v-show="tab === 'note'" class="tab-body">
+
+            <div v-if="patient.admission_status !== 'admitted'" class="warn-bar">
+              この患者は現在入院していません。看護記録の作成対象外です。
+              <template v-if="patient.admission_status === 'never'">
+                （入院歴がありません。「＋ 新規入院」から登録してください）
+              </template>
+              <template v-else>（表示しているのは前回入院時の記録です）</template>
+            </div>
+
+            <!-- ① 過去の記録 -->
+            <div class="block">
+              <div class="block-head">
+                <h3>① 過去{{ days }}日間の看護記録（参照専用）</h3>
+                <select v-model.number="days" @change="loadNotes">
+                  <option :value="3">直近 3 日</option>
+                  <option :value="7">直近 7 日</option>
+                  <option :value="14">直近 14 日</option>
+                </select>
+              </div>
+              <div class="past-notes">
+                <div v-if="notes.length === 0" class="empty">記録がありません</div>
+                <article v-for="n in notes" :key="n.id" class="note-card">
+                  <div class="note-meta">
+                    <strong>{{ n.record_date }}</strong>
+                    <span>{{ n.shift }}</span>
+                    <span>{{ n.format }}</span>
+                    <span v-if="n.author_name">記載：{{ n.author_name }}</span>
+                    <span class="status" :class="n.status">{{ statusLabel(n.status) }}</span>
+                  </div>
+                  <pre class="note-text">{{ n.display_content }}</pre>
+                </article>
+              </div>
+            </div>
+
+            <!-- ② 本日の入力 -->
+            <div class="block">
+              <div class="block-head"><h3>② 本日の入力</h3></div>
+
+              <div class="vitals">
+                <label>体温 <input v-model="today.bt" placeholder="36.8"><span>℃</span></label>
+                <label>血圧 <input v-model="today.bp" placeholder="128/76"><span>mmHg</span></label>
+                <label>脈拍 <input v-model="today.hr" placeholder="72"><span>回/分</span></label>
+                <label>SpO2 <input v-model="today.spo2" placeholder="98"><span>%</span></label>
+                <label>呼吸 <input v-model="today.rr" placeholder="16"><span>回/分</span></label>
+              </div>
+
+              <div class="checks">
+                <label v-for="c in checkItems" :key="c">
+                  <input type="checkbox" :value="c" v-model="today.checks"> {{ c }}
+                </label>
+              </div>
+
+              <textarea v-model="today.free" rows="4"
+                        placeholder="今日の変化や気づいたことを短く入力（例：午後、創部やや発赤。Dr.報告済み）"></textarea>
+
+              <div class="gen-row">
+                <label>記録様式
+                  <select v-model="today.format">
+                    <option value="SOAP">SOAP</option>
+                    <option value="FOCUS">フォーカスチャーティング</option>
+                    <option value="NARRATIVE">経時記録</option>
+                  </select>
+                </label>
+                <button class="primary" @click="generate"
+                        :disabled="generating || patient.admission_status !== 'admitted'">
+                  {{ generating ? '生成中…' : '記録を生成 ▶' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- ③ 生成結果 -->
+            <div class="block">
+              <div class="block-head"><h3>③ 生成結果（編集可）</h3></div>
+              <textarea v-model="generated" rows="12"
+                        placeholder="ここに AI が生成した看護記録が表示されます（M2 で実装）"></textarea>
+              <div class="gen-row">
+                <button class="primary" disabled>確定して保存（M2）</button>
+                <button disabled>破棄</button>
+                <span class="disclaimer">
+                  ※ 本システムは記録作成の支援ツールです。記録内容の最終責任は看護師にあります。
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <!-- === タブ3：退院サマリー === -->
+          <section v-show="tab === 'discharge'" class="tab-body">
+            <div class="empty">
+              退院サマリー生成は M4 で実装予定です。<br>
+              入院期間中のすべての看護記録を Map-Reduce で要約し、<br>
+              「入院時の状態 / 経過 / 実施したケア / 退院時の状態 / 継続が必要なケア / 指導内容」<br>
+              の構成で出力します。
+            </div>
+          </section>
+        </template>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ============================== 新規入院モーダル ============================== -->
+  <div v-if="admit.open" class="modal-backdrop" @click.self="closeAdmit">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>新規入院登録</h3>
+        <button class="link-btn dark" @click="closeAdmit">閉じる</button>
+      </div>
+
+      <!-- ステップ1：患者を選ぶ -->
+      <div class="modal-section">
+        <div class="step-title">
+          <span class="step-no">1</span> 患者を選択
+          <small>患者マスタ全体から検索します（未入院・退院済を含む）</small>
+        </div>
+
+        <div v-if="!admit.patient">
+          <div class="search-box inline">
+            <input type="text" v-model="admit.keyword" placeholder="氏名・カナ・患者番号"
+                   @keyup.enter="searchMaster">
+            <button @click="searchMaster">検索</button>
+            <button @click="admit.newPatientMode = !admit.newPatientMode">
+              {{ admit.newPatientMode ? '検索に戻る' : '新規患者を登録' }}
+            </button>
+          </div>
+
+          <!-- 既存患者の検索結果 -->
+          <div v-if="!admit.newPatientMode">
+            <div v-if="admit.searched && admit.results.length === 0" class="empty small">
+              該当する患者がいません。「新規患者を登録」から登録してください。
+            </div>
+            <ul class="master-list">
+              <li v-for="p in admit.results" :key="p.id">
+                <div>
+                  <strong>{{ p.name }}</strong>
+                  <small>（{{ p.name_kana }}）{{ p.patient_no }}　{{ ageText(p.age) }} {{ p.sex }}</small>
+                </div>
+                <div>
+                  <span class="badge st" :class="p.admission_status">
+                    {{ admissionLabel(p.admission_status) }}
+                  </span>
+                  <button v-if="p.admission_status !== 'admitted'"
+                          @click="admit.patient = p">選択</button>
+                  <span v-else class="muted">入院中のため登録不可</span>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- 新規患者の登録 -->
+          <div v-else class="form-grid">
+            <label>氏名 <input type="text" v-model="admit.newPatient.name" placeholder="山口 一郎"></label>
+            <label>カナ <input type="text" v-model="admit.newPatient.name_kana" placeholder="ヤマグチ イチロウ"></label>
+            <label>生年月日 <input type="date" v-model="admit.newPatient.birth_date"></label>
+            <label>性別
+              <select v-model="admit.newPatient.sex">
+                <option value="男性">男性</option>
+                <option value="女性">女性</option>
+                <option value="その他">その他</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button class="primary" @click="createPatient" :disabled="admit.busy">
+                患者を登録して選択
+              </button>
+              <small class="muted">患者番号は自動採番されます</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- 選択済み -->
+        <div v-else class="selected-patient">
+          <strong>{{ admit.patient.name }}</strong>
+          <small>（{{ admit.patient.name_kana }}）{{ admit.patient.patient_no }}
+            　{{ ageText(admit.patient.age) }} {{ admit.patient.sex }}</small>
+          <button @click="admit.patient = null">選び直す</button>
+        </div>
+      </div>
+
+      <!-- ステップ2：入院情報 -->
+      <div class="modal-section" :class="{ disabled: !admit.patient }">
+        <div class="step-title"><span class="step-no">2</span> 入院情報を入力</div>
+        <div class="form-grid">
+          <label>入院日 <input type="date" v-model="admit.form.admitted_at"></label>
+          <label>病棟 <input type="text" :value="me.ward" disabled></label>
+          <label>病室 <input type="text" v-model="admit.form.room" placeholder="305"></label>
+          <label>主治医 <input type="text" v-model="admit.form.attending_doctor"
+                              placeholder="整形外科　大西 医師"></label>
+          <label class="wide">診断名 <input type="text" v-model="admit.form.diagnosis"
+                                          placeholder="右大腿骨頸部骨折　人工骨頭置換術後"></label>
+        </div>
+      </div>
+
+      <p v-if="admit.error" class="error">{{ admit.error }}</p>
+
+      <div class="modal-foot">
+        <button @click="closeAdmit">キャンセル</button>
+        <button class="primary" @click="submitAdmission"
+                :disabled="!admit.patient || admit.busy">
+          {{ admit.busy ? '登録中…' : '入院を登録' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

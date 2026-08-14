@@ -1,0 +1,77 @@
+# NurseNote AI - 開発用 Docker 構成 (M1)
+#
+#   db       : PostgreSQL 16 + pgvector  (M3 以降のベクトル検索に備えて拡張入り)
+#   backend  : FastAPI (uvicorn --reload, ソースは bind mount で即時反映)
+#   frontend : nginx で静的ファイル配信 + /api を backend へリバースプロキシ
+#
+# 起動:  docker compose up -d --build
+# 停止:  docker compose down          (データは残る)
+# 初期化: docker compose down -v      (DB のデータも削除)
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: nursenote_db
+    restart: unless-stopped
+    environment:
+      # psql -U nursenote -d nursenote
+      # docker exec -it nursenote_db psql -U nursenote -d nursenote
+      # docker exec -it nursenote_db psql "postgresql://nursenote:nursenote_pass@localhost:5432/nursenote?sslmode=disable"
+      POSTGRES_USER: nursenote
+      POSTGRES_PASSWORD: nursenote_pass
+      POSTGRES_DB: nursenote
+      TZ: Asia/Tokyo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nursenote -d nursenote"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    container_name: nursenote_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nursenote:nursenote_pass@db:5432/nursenote
+      JWT_SECRET: dev-secret-change-me-in-production
+      SEED_ON_STARTUP: "true"
+      TZ: Asia/Tokyo
+      PYTHONPATH: /app
+    # M2 で LLM を繋ぐときに有効化する（ルートの .env は書式エラーがあるため使わない）
+    # env_file:
+    #   - .env.docker
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head &&
+        python -m app.seed &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: nursenote_frontend
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Tokyo
+    volumes:
+      - ./frontend/html:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
