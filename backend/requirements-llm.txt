@@ -21,6 +21,9 @@ langchain-ollama==1.1.0
 langchain-openai==1.4.3
 langchain-deepseek==1.1.0
 
+# プロンプト YAML の読み込み
+pyyaml==6.0.2
+
 # --- ベクトル検索（Few-shot 事例・用語集のリトリーバ）---
 # 注意: langchain-postgres は psycopg3 を使う。
 #       アプリ本体の asyncpg とは別のドライバが同居する形になる。

@@ -38,8 +38,8 @@ docker compose up -d --build
 | URL | 内容 |
 |---|---|
 | http://localhost:5173 | アプリケーション画面 |
-| http://localhost:8000/docs | Swagger UI（API 仕様） |
-| http://localhost:8000/api/v1/health | ヘルスチェック |
+| http://localhost:9200/docs | Swagger UI（API 仕様） |
+| http://localhost:9200/api/v1/health | ヘルスチェック |
 
 起動時に `alembic upgrade head` → `python -m app.seed` → `uvicorn` が順に実行される。
 シードは冪等（投入済みならスキップ）。再投入は `python -m app.seed --force`。
@@ -117,7 +117,8 @@ NurseNote_AI/
 `fetch` を使う。npm も node_modules も存在しない。5173 は Vite ではなく nginx である。
 
 データは **患者 → 入院（admission）→ 看護記録** の 3 階層。
-看護記録は `patient_id` ではなく `admission_id` に紐づくため、記録を引くには先に「どの入院か」を確定させる。
+患者は入院・外来を問わず **カルテ番号**（`karte_no`）で識別する。番号は患者マスタにあり、入院には持たせない。
+看護記録は `admission_id` に紐づく。病棟は二交代（日勤・夜勤）で、同じ日に勤務帯ごとに 1 件、計 2 件。
 
 ---
 
@@ -140,11 +141,12 @@ NurseNote_AI/
 | # | 内容 | 状態 |
 |---|---|---|
 | **M1** | Docker 構成、DB スキーマ、Alembic、シードデータ、ログイン（JWT）、患者検索、過去記録表示、新規入院登録・退院処理 | ✅ 完了 |
-| **M2** | Chain A による記録生成、型付き根拠出力（`EvidenceItem`）、許可リスト DTO、SSE ストリーミング、編集・確定保存、監査ログ | 未着手 |
+| **M2** | Chain A による記録生成、型付き根拠出力（`EvidenceItem`）、許可リスト DTO、SSE ストリーミング、編集・確定保存、監査ログ | ✅ 完了 |
 | **M3** | 検証 Layer 1（決定的チェック）、Chain B による Layer 2、確定制御、記録様式の切り替え、LangSmith 評価セット | 未着手 |
 | **M4** | 退院サマリー（Map-Reduce）、入院時情報の入力フォーム | 未着手 |
 
-画面上の「記録を生成」「確定して保存」「退院サマリー」は M2 以降で実装する。
+画面上の「記録を生成」「確定して保存」は M2 で動作する。退院サマリーは M4。
+クラウド LLM の API キーは未設定。使うときは `DEEPSEEK_API_KEY` または `QWEN_API_KEY` を入れ、`ALLOW_CLOUD_LLM=true` と `LLM_PROVIDER` を切り替える。既定は Ollama。
 
 ---
 

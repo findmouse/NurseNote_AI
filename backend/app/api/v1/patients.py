@@ -9,7 +9,7 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,8 @@ from app.api.deps import ensure_ward_access, get_current_nurse
 from app.core.config import settings
 from app.db.session import get_db
 from app.models import (
+    SHIFT_DAY,
+    SHIFT_NIGHT,
     Admission,
     AdmissionAssessment,
     AuditLog,
@@ -78,11 +80,11 @@ def _to_list_item(patient: Patient, adm: Admission | None) -> PatientListItem:
     return item
 
 
-async def _next_patient_no(db: AsyncSession) -> str:
-    """P00001 形式の連番を採番する（デモ用の簡易実装）"""
+async def _next_karte_no(db: AsyncSession) -> str:
+    """P00001 形式のカルテ番号を採番する（デモ用の簡易実装）"""
     last = await db.scalar(
-        select(Patient.patient_no)
-        .where(Patient.patient_no.op("~")("^P[0-9]+$"))
+        select(Patient.karte_no)
+        .where(Patient.karte_no.op("~")("^P[0-9]+$"))
         .order_by(Patient.id.desc())
         .limit(1)
     )
@@ -90,7 +92,7 @@ async def _next_patient_no(db: AsyncSession) -> str:
     while True:
         candidate = f"P{seq:05d}"
         exists = await db.scalar(
-            select(Patient.id).where(Patient.patient_no == candidate)
+            select(Patient.id).where(Patient.karte_no == candidate)
         )
         if exists is None:
             return candidate
@@ -102,7 +104,7 @@ async def _next_patient_no(db: AsyncSession) -> str:
 
 @router.get("", response_model=list[PatientListItem], summary="患者検索")
 async def search_patients(
-        q: str | None = Query(None, description="氏名・カナ・患者番号の部分一致"),
+        q: str | None = Query(None, description="氏名・カナ・カルテ番号の部分一致"),
         scope: str = Query(
             "admitted",
             pattern="^(admitted|all)$",
@@ -117,7 +119,7 @@ async def search_patients(
     name_filter = or_(
         Patient.name.ilike(like),
         Patient.name_kana.ilike(like),
-        Patient.patient_no.ilike(like),
+        Patient.karte_no.ilike(like),
     )
 
     # ---- 入院中のみ（主画面）----
@@ -141,7 +143,7 @@ async def search_patients(
     if not keyword:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="患者マスタ検索では検索語（氏名・カナ・患者番号）が必要です",
+            detail="患者マスタ検索では検索語（氏名・カナ・カルテ番号）が必要です",
         )
 
     patients = (
@@ -172,19 +174,19 @@ async def create_patient(
         nurse: Nurse = Depends(get_current_nurse),
         db: AsyncSession = Depends(get_db),
 ) -> PatientListItem:
-    patient_no = (payload.patient_no or "").strip() or await _next_patient_no(db)
+    karte_no = (payload.karte_no or "").strip() or await _next_karte_no(db)
 
     duplicate = await db.scalar(
-        select(Patient.id).where(Patient.patient_no == patient_no)
+        select(Patient.id).where(Patient.karte_no == karte_no)
     )
     if duplicate is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"患者番号 {patient_no} は既に登録されています",
+            detail=f"カルテ番号 {karte_no} は既に登録されています",
         )
 
     patient = Patient(
-        patient_no=patient_no,
+        karte_no=karte_no,
         name=payload.name.strip(),
         name_kana=(payload.name_kana or "").strip() or None,
         birth_date=payload.birth_date,
@@ -199,7 +201,7 @@ async def create_patient(
             action="patient.create",
             target_type="patient",
             target_id=patient.id,
-            detail={"patient_no": patient_no, "name": patient.name},
+            detail={"karte_no": karte_no, "name": patient.name},
             ip_address=request.client.host if request.client else None,
         )
     )
@@ -289,7 +291,16 @@ async def list_patient_notes(
                 NursingNote.admission_id == adm.id,
                 NursingNote.record_date >= since,
             )
-            .order_by(NursingNote.record_date.desc(), NursingNote.id.desc())
+            .order_by(
+                NursingNote.record_date.desc(),
+                # 同じ日は夜勤（後の勤務帯）を上に出す
+                case(
+                    (NursingNote.shift == SHIFT_NIGHT, 0),
+                    (NursingNote.shift == SHIFT_DAY, 1),
+                    else_=2,
+                ),
+                NursingNote.id.desc(),
+            )
         )
     ).all()
 

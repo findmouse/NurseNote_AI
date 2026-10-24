@@ -59,7 +59,7 @@
         </div>
 
         <div class="search-box">
-          <input type="text" v-model="keyword" placeholder="氏名・カナ・患者番号"
+          <input type="text" v-model="keyword" placeholder="氏名・カナ・カルテ番号"
                  @keyup.enter="searchPatients">
           <button @click="searchPatients">検索</button>
         </div>
@@ -79,7 +79,7 @@
               </span>
             </div>
             <div class="row2">
-              {{ p.patient_no }}　{{ ageText(p.age) }} {{ p.sex }}
+              {{ p.karte_no }}　{{ ageText(p.age) }} {{ p.sex }}
             </div>
             <div class="row3" v-if="p.current_admission">
               {{ p.current_admission.diagnosis }}
@@ -107,7 +107,7 @@
                 </span>
               </h2>
               <div class="ph-sub">
-                患者番号 {{ patient.patient_no }}
+                カルテ番号 {{ patient.karte_no }}
                 <template v-if="adm">
                   　|　{{ adm.ward }} {{ adm.room }}号室
                   　|　入院日 {{ adm.admitted_at }}
@@ -180,7 +180,7 @@
             <!-- ① 過去の記録 -->
             <div class="block">
               <div class="block-head">
-                <h3>① 過去{{ days }}日間の看護記録（参照専用）</h3>
+                <h3>① 過去{{ days }}日間の看護記録（日勤・夜勤、参照専用）</h3>
                 <select v-model.number="days" @change="loadNotes">
                   <option :value="3">直近 3 日</option>
                   <option :value="7">直近 7 日</option>
@@ -224,6 +224,12 @@
                         placeholder="今日の変化や気づいたことを短く入力（例：午後、創部やや発赤。Dr.報告済み）"></textarea>
 
               <div class="gen-row">
+                <label>勤務帯
+                  <select v-model="today.shift">
+                    <option value="日勤">日勤</option>
+                    <option value="夜勤">夜勤</option>
+                  </select>
+                </label>
                 <label>記録様式
                   <select v-model="today.format">
                     <option value="SOAP">SOAP</option>
@@ -241,15 +247,29 @@
             <!-- ③ 生成結果 -->
             <div class="block">
               <div class="block-head"><h3>③ 生成結果（編集可）</h3></div>
+              <p v-if="genStatus" class="gen-status">{{ genStatus }}</p>
               <textarea v-model="generated" rows="12"
-                        placeholder="ここに AI が生成した看護記録が表示されます（M2 で実装）"></textarea>
+                        placeholder="ここに AI が生成した看護記録が表示されます"></textarea>
+              <div v-if="previewParts.length" class="note-preview">
+                <template v-for="(part, i) in previewParts" :key="i">
+                  <span v-if="part.type === 'plain'">{{ part.text }}</span>
+                  <span v-else :class="evidenceClass(part.item)"
+                        @click="showDerived(part.item)">{{ part.text }}</span>
+                </template>
+              </div>
+              <p v-if="derivedText" class="derived">{{ derivedText }}</p>
+              <p v-if="previewParts.length" class="legend">色なし＝本日の事実　下線＝過去の記録・患者背景　黄色＝臨床的解釈（クリックで根拠）</p>
               <div class="gen-row">
-                <button class="primary" disabled>確定して保存（M2）</button>
-                <button disabled>破棄</button>
+                <button class="primary" @click="confirmNote"
+                        :disabled="saving || !generated.trim() || patient.admission_status !== 'admitted'">
+                  {{ saving ? '保存中…' : '確定して保存' }}
+                </button>
+                <button @click="discardDraft" :disabled="!generated && !saveMessage">破棄</button>
                 <span class="disclaimer">
                   ※ 本システムは記録作成の支援ツールです。記録内容の最終責任は看護師にあります。
                 </span>
               </div>
+              <p v-if="saveMessage" class="save-ok">{{ saveMessage }}</p>
             </div>
           </section>
 
@@ -285,7 +305,7 @@
 
         <div v-if="!admit.patient">
           <div class="search-box inline">
-            <input type="text" v-model="admit.keyword" placeholder="氏名・カナ・患者番号"
+            <input type="text" v-model="admit.keyword" placeholder="氏名・カナ・カルテ番号"
                    @keyup.enter="searchMaster">
             <button @click="searchMaster">検索</button>
             <button @click="admit.newPatientMode = !admit.newPatientMode">
@@ -302,7 +322,7 @@
               <li v-for="p in admit.results" :key="p.id">
                 <div>
                   <strong>{{ p.name }}</strong>
-                  <small>（{{ p.name_kana }}）{{ p.patient_no }}　{{ ageText(p.age) }} {{ p.sex }}</small>
+                  <small>（{{ p.name_kana }}）{{ p.karte_no }}　{{ ageText(p.age) }} {{ p.sex }}</small>
                 </div>
                 <div>
                   <span class="badge st" :class="p.admission_status">
@@ -318,6 +338,9 @@
 
           <!-- 新規患者の登録 -->
           <div v-else class="form-grid">
+            <label class="wide">カルテ番号
+              <input type="text" v-model="admit.newPatient.karte_no" placeholder="省略時は自動採番（例 P00303）">
+            </label>
             <label>氏名 <input type="text" v-model="admit.newPatient.name" placeholder="山口 一郎"></label>
             <label>カナ <input type="text" v-model="admit.newPatient.name_kana" placeholder="ヤマグチ イチロウ"></label>
             <label>生年月日 <input type="date" v-model="admit.newPatient.birth_date"></label>
@@ -332,7 +355,7 @@
               <button class="primary" @click="createPatient" :disabled="admit.busy">
                 患者を登録して選択
               </button>
-              <small class="muted">患者番号は自動採番されます</small>
+              <small class="muted">カルテ番号は入院・外来を問わず患者に付きます。空欄なら自動採番します</small>
             </div>
           </div>
         </div>
@@ -340,7 +363,7 @@
         <!-- 選択済み -->
         <div v-else class="selected-patient">
           <strong>{{ admit.patient.name }}</strong>
-          <small>（{{ admit.patient.name_kana }}）{{ admit.patient.patient_no }}
+          <small>（{{ admit.patient.name_kana }}）{{ admit.patient.karte_no }}
             　{{ ageText(admit.patient.age) }} {{ admit.patient.sex }}</small>
           <button @click="admit.patient = null">選び直す</button>
         </div>

@@ -91,6 +91,62 @@ async function api(method, path, opt = {}) {
 }
 
 /** yyyy-mm-dd 形式の今日 */
+function emptyGenMeta() {
+  return { model_name: null, prompt_version: null, token_usage: null };
+}
+
+/** 根拠テキストを本文に重ねて、色分け用の断片に分ける。 */
+function buildPreview(text, evidence) {
+  if (!text) return [];
+  const ranges = [];
+  for (const item of evidence || []) {
+    if (!item || !item.text) continue;
+    const start = text.indexOf(item.text);
+    if (start < 0) continue;
+    ranges.push({ start, end: start + item.text.length, item });
+  }
+  ranges.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const picked = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start < cursor) continue;
+    picked.push(range);
+    cursor = range.end;
+  }
+  const parts = [];
+  let index = 0;
+  for (const range of picked) {
+    if (range.start > index) {
+      parts.push({ type: 'plain', text: text.slice(index, range.start) });
+    }
+    parts.push({
+      type: 'mark',
+      text: text.slice(range.start, range.end),
+      item: range.item,
+    });
+    index = range.end;
+  }
+  if (index < text.length) parts.push({ type: 'plain', text: text.slice(index) });
+  return parts;
+}
+
+function parseSSEChunk(raw) {
+  let event = 'message';
+  const dataLines = [];
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  return { event, data: JSON.parse(dataLines.join('\n')) };
+}
+
+/** 二交代。8:00–17:00 を日勤、それ以外を夜勤の初期値にする。 */
+function defaultShift() {
+  const h = new Date().getHours();
+  return h >= 8 && h < 17 ? '日勤' : '夜勤';
+}
+
 function todayStr() {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -105,7 +161,7 @@ function emptyAdmitState() {
     results: [],
     searched: false,
     newPatientMode: false,
-    newPatient: { name: '', name_kana: '', birth_date: '', sex: '男性' },
+    newPatient: { karte_no: '', name: '', name_kana: '', birth_date: '', sex: '男性' },
     patient: null,
     form: { admitted_at: todayStr(), room: '', diagnosis: '', attending_doctor: '' },
     busy: false,
@@ -134,7 +190,14 @@ Vue.createApp({
       days: 7,
       notes: [],
       generating: false,
+      genStatus: '',
       generated: '',
+      contentAi: '',
+      evidence: [],
+      genMeta: emptyGenMeta(),
+      derivedText: '',
+      saving: false,
+      saveMessage: '',
       checkItems: [
         '食事全量', '食事半量', '排便あり', '疼痛訴えあり',
         '歩行器で移動', '車椅子移動', '不眠', '発熱あり', '創部処置',
@@ -143,6 +206,7 @@ Vue.createApp({
         bt: '', bp: '', hr: '', spo2: '', rr: '',
         checks: [],
         free: '',
+        shift: defaultShift(),
         format: 'SOAP',
       },
 
@@ -172,6 +236,9 @@ Vue.createApp({
       const adl = this.patient && this.patient.assessment && this.patient.assessment.adl;
       if (!adl) return '－';
       return Object.keys(adl).map((k) => k + '：' + adl[k]).join('　/　');
+    },
+    previewParts() {
+      return buildPreview(this.generated, this.evidence);
     },
   },
 
@@ -244,7 +311,7 @@ Vue.createApp({
 
     async selectPatient(id) {
       this.selectedId = id;
-      this.generated = '';
+      this.discardDraft();
       this.today.checks = [];
       this.today.free = '';
       try {
@@ -268,27 +335,137 @@ Vue.createApp({
       }
     },
 
+    todayPayload() {
+      return {
+        patient_id: this.selectedId,
+        shift: this.today.shift,
+        format: this.today.format,
+        vitals: {
+          bt: this.today.bt, bp: this.today.bp, hr: this.today.hr,
+          spo2: this.today.spo2, rr: this.today.rr,
+        },
+        checks: this.today.checks,
+        free_text: this.today.free,
+      };
+    },
+
     async generate() {
       this.generating = true;
+      this.genStatus = '準備しています…';
+      this.saveMessage = '';
+      this.derivedText = '';
+      this.generated = '';
+      this.contentAi = '';
+      this.evidence = [];
+      this.genMeta = emptyGenMeta();
       try {
-        const res = await api('POST', '/notes/generate', {
-          body: {
-            patient_id: this.selectedId,
-            format: this.today.format,
-            vitals: {
-              bt: this.today.bt, bp: this.today.bp, hr: this.today.hr,
-              spo2: this.today.spo2, rr: this.today.rr,
-            },
-            checks: this.today.checks,
-            free_text: this.today.free,
-          },
+        const headers = { 'Content-Type': 'application/json' };
+        const token = localStorage.getItem(TOKEN_KEY);
+        if (token) headers.Authorization = 'Bearer ' + token;
+        const res = await fetch('/api/v1/notes/generate', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(this.todayPayload()),
         });
-        this.generated = res.content || '';
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new ApiError(res.status, extractDetail(data) || '生成に失敗しました');
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let donePayload = null;
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          let splitAt;
+          while ((splitAt = buffer.indexOf('\n\n')) >= 0) {
+            const raw = buffer.slice(0, splitAt);
+            buffer = buffer.slice(splitAt + 2);
+            const parsed = parseSSEChunk(raw);
+            if (!parsed) continue;
+            if (parsed.event === 'status') {
+              this.genStatus = parsed.data.phase === 'retrieve'
+                ? '過去の記録を参照しています…'
+                : '記録を生成しています…';
+            } else if (parsed.event === 'delta') {
+              this.generated += parsed.data.text || '';
+            } else if (parsed.event === 'error') {
+              throw new ApiError(0, parsed.data.detail || '生成に失敗しました');
+            } else if (parsed.event === 'done') {
+              donePayload = parsed.data;
+            }
+          }
+        }
+        if (!donePayload) throw new ApiError(0, '生成が完了しませんでした');
+        this.generated = donePayload.content || this.generated;
+        this.contentAi = donePayload.content || '';
+        this.evidence = donePayload.evidence || [];
+        this.genMeta = {
+          model_name: donePayload.model_name || null,
+          prompt_version: donePayload.prompt_version || null,
+          token_usage: donePayload.token_usage || null,
+        };
       } catch (e) {
-        alert(e.detail || '生成に失敗しました');
+        alert(e.detail || e.message || '生成に失敗しました');
       } finally {
         this.generating = false;
+        this.genStatus = '';
       }
+    },
+
+    async confirmNote() {
+      if (!this.generated.trim()) return;
+      this.saving = true;
+      this.saveMessage = '';
+      try {
+        await api('POST', '/notes', {
+          body: {
+            ...this.todayPayload(),
+            content_ai: this.contentAi,
+            content_final: this.generated,
+            evidence: this.evidence,
+            model_name: this.genMeta.model_name,
+            prompt_version: this.genMeta.prompt_version,
+            token_usage: this.genMeta.token_usage,
+          },
+        });
+        this.discardDraft();
+        this.saveMessage = '確定して保存しました';
+        await this.loadNotes();
+      } catch (e) {
+        alert(e.detail || '保存に失敗しました');
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    discardDraft() {
+      this.generated = '';
+      this.contentAi = '';
+      this.evidence = [];
+      this.genMeta = emptyGenMeta();
+      this.derivedText = '';
+      this.saveMessage = '';
+    },
+
+    evidenceClass(item) {
+      if (!item) return '';
+      if (item.source_type === 'clinical_inference') return 'ev-infer';
+      if (item.source_type === 'historical_note' || item.source_type === 'patient_profile') {
+        return 'ev-hist';
+      }
+      return '';
+    },
+
+    showDerived(item) {
+      if (!item || item.source_type !== 'clinical_inference') {
+        this.derivedText = '';
+        return;
+      }
+      const refs = (item.derived_from || []).join('、');
+      this.derivedText = refs ? 'この解釈の根拠: ' + refs : '根拠の参照がありません';
     },
 
     // ----------------------------------------------------------- 新規入院
@@ -330,6 +507,7 @@ Vue.createApp({
       try {
         this.admit.patient = await api('POST', '/patients', {
           body: {
+            karte_no: (np.karte_no || '').trim() || null,
             name: np.name,
             name_kana: np.name_kana || null,
             birth_date: np.birth_date || null,

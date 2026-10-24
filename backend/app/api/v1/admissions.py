@@ -81,7 +81,7 @@ async def create_admission(
             target_type="admission",
             target_id=admission.id,
             detail={
-                "patient_no": patient.patient_no,
+                "karte_no": patient.karte_no,
                 "patient_name": patient.name,
                 "ward": ward,
                 "admitted_at": admitted_at.isoformat(),

@@ -16,6 +16,8 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal
 from app.models import (
+    SHIFT_DAY,
+    SHIFT_NIGHT,
     Admission,
     AdmissionAssessment,
     Nurse,
@@ -40,7 +42,7 @@ NURSES = [
 # ---------------------------------------------------------------------------
 SCENARIOS = [
     {
-        "patient_no": "P00123",
+        "karte_no": "P00123",
         "name": "田中 太郎",
         "name_kana": "タナカ タロウ",
         "birth_date": date(1954, 3, 12),
@@ -95,7 +97,7 @@ SCENARIOS = [
         ],
     },
     {
-        "patient_no": "P00124",
+        "karte_no": "P00124",
         "name": "鈴木 花",
         "name_kana": "スズキ ハナ",
         "birth_date": date(1938, 11, 2),
@@ -148,7 +150,7 @@ SCENARIOS = [
         ],
     },
     {
-        "patient_no": "P00125",
+        "karte_no": "P00125",
         "name": "伊藤 健二",
         "name_kana": "イトウ ケンジ",
         "birth_date": date(1967, 6, 25),
@@ -200,7 +202,7 @@ SCENARIOS = [
         ],
     },
     {
-        "patient_no": "P00126",
+        "karte_no": "P00126",
         "name": "渡辺 里美",
         "name_kana": "ワタナベ サトミ",
         "birth_date": date(1979, 1, 18),
@@ -247,7 +249,7 @@ SCENARIOS = [
         ],
     },
     {
-        "patient_no": "P00201",
+        "karte_no": "P00201",
         "name": "中村 三郎",
         "name_kana": "ナカムラ サブロウ",
         "birth_date": date(1946, 9, 8),
@@ -296,7 +298,7 @@ SCENARIOS = [
         ],
     },
     {
-        "patient_no": "P00202",
+        "karte_no": "P00202",
         "name": "小林 陽子",
         "name_kana": "コバヤシ ヨウコ",
         "birth_date": date(1958, 4, 21),
@@ -350,7 +352,7 @@ SCENARIOS = [
     {
         # 退院済みの患者。担当一覧には出てこないが、患者マスタ検索では見つかる。
         # 退院サマリー生成（M4）のデモ用データも兼ねる。
-        "patient_no": "P00118",
+        "karte_no": "P00118",
         "name": "松本 久美",
         "name_kana": "マツモト クミ",
         "birth_date": date(1962, 7, 30),
@@ -400,19 +402,18 @@ SCENARIOS = [
     },
 ]
 
-# 患者マスタには登録されているが、入院歴が一度もない患者。
-# 「入院していない患者は担当一覧に出てこない」ことの確認と、
-# 新規入院登録のデモに使う。
+# カルテ番号だけがある患者（外来受診のみ、入院歴なし）。
+# 担当一覧には出ない。新規入院登録でカルテ番号から探せる。
 MASTER_ONLY_PATIENTS = [
     {
-        "patient_no": "P00301",
+        "karte_no": "P00301",
         "name": "山口 一郎",
         "name_kana": "ヤマグチ イチロウ",
         "birth_date": date(1951, 2, 14),
         "sex": "男性",
     },
     {
-        "patient_no": "P00302",
+        "karte_no": "P00302",
         "name": "森 さくら",
         "name_kana": "モリ サクラ",
         "birth_date": date(1988, 12, 3),
@@ -438,11 +439,47 @@ def _make_vitals(base: dict, day_index: int, total_days: int) -> dict:
     }
 
 
-def _build_soap(sc: dict, vitals: dict, day_index: int, total_days: int) -> str:
-    subj = rng.choice(sc["subjective"])
-    objs = rng.sample(sc["objective"], k=min(3, len(sc["objective"])))
-    assess = rng.choice(sc["assessment_text"])
-    plan = rng.choice(sc["plan_text"])
+# 夜勤帯の記録。日勤の経過をコピーせず、夜間の観察に寄せる。
+NIGHT_SUBJECTIVE = [
+    "「夜は途中で目が覚めた」と話される。",
+    "夜間の疼痛について尋ねると「安静にしていると楽」とのこと。",
+    "「よく眠れた」と話される。",
+    "夜間の呼びかけに開眼し、見当識は保たれている。",
+]
+NIGHT_OBJECTIVE = [
+    "夜間は巡視を2時間ごとに実施。転倒・離床センサーの作動なし。",
+    "入眠は23時頃。中途覚醒は1回で、トイレ誘導後に再入眠された。",
+    "夜間に疼痛の訴えがあり、指示の鎮痛薬を使用。その後は安静に過ごされた。",
+    "夜間の呼吸状態は安定。体位変換後も苦痛の増強はなし。",
+]
+NIGHT_ASSESSMENT = [
+    "夜間の状態は安定しており、緊急の介入を要する変化は認めない。",
+    "睡眠は概ね確保できているが、中途覚醒時の転倒リスクに注意が必要。",
+    "夜間の疼痛は指示薬で軽減しており、安静は保たれている。",
+]
+NIGHT_PLAN = [
+    "夜間も巡視を継続し、疼痛時は指示の鎮痛薬で対応する。",
+    "離床時は必ず付き添い、センサーの使用を継続する。",
+    "朝の申し送りで、夜間の睡眠と疼痛の経過を日勤へ伝える。",
+]
+NIGHT_FREE = [
+    "夜間安定。中途覚醒1回、トイレ誘導後再入眠。センサー作動なし",
+    "夜勤帯に疼痛あり。指示薬使用後軽減。巡視で著変なし",
+    "入眠23時頃。呼吸安定。転倒なく朝まで過ごす",
+]
+
+
+def _build_soap(sc: dict, vitals: dict, shift: str) -> str:
+    if shift == SHIFT_NIGHT:
+        subj = rng.choice(NIGHT_SUBJECTIVE)
+        objs = rng.sample(NIGHT_OBJECTIVE, k=2)
+        assess = rng.choice(NIGHT_ASSESSMENT)
+        plan = rng.choice(NIGHT_PLAN)
+    else:
+        subj = rng.choice(sc["subjective"])
+        objs = rng.sample(sc["objective"], k=min(3, len(sc["objective"])))
+        assess = rng.choice(sc["assessment_text"])
+        plan = rng.choice(sc["plan_text"])
 
     vital_line = (
         f"体温{vitals['bt']}℃、血圧{vitals['bp']}mmHg、脈拍{vitals['hr']}回/分、"
@@ -506,7 +543,7 @@ async def seed(force: bool = False) -> None:
         # ---------------- 患者・入院・記録 ----------------
         for sc in SCENARIOS:
             patient = Patient(
-                patient_no=sc["patient_no"],
+                karte_no=sc["karte_no"],
                 name=sc["name"],
                 name_kana=sc["name_kana"],
                 birth_date=sc["birth_date"],
@@ -550,39 +587,66 @@ async def seed(force: bool = False) -> None:
 
             total_days = sc["days"]
             authors = ward_nurses[sc["ward"]]
-            # 入院翌日から昨日（退院済みなら退院日）まで記録を作成。
+            jst = timezone(timedelta(hours=9))
+            # 入院翌日から昨日（退院済みなら退院日）まで、日勤と夜勤を 1 件ずつ作る。
             # 当日分は看護師がこれから書く想定なので作らない。
             last_index = discharged_after if discharged_after is not None else total_days
             for i in range(1, last_index + 1):
                 rec_date = admitted_at + timedelta(days=i)
                 if rec_date >= today:
                     break
-                vitals = _make_vitals(sc["vitals_base"], i, total_days)
-                author = authors[i % len(authors)]
-                session.add(
-                    NursingNote(
-                        admission_id=admission.id,
-                        record_date=rec_date,
-                        shift="日勤",
-                        format="SOAP",
-                        vitals=vitals,
-                        input_structured={
+                day_author = authors[i % len(authors)]
+                night_author = authors[(i + 1) % len(authors)]
+                for shift, author, confirmed_at, structured, free_text in (
+                    (
+                        SHIFT_DAY,
+                        day_author,
+                        datetime.combine(rec_date, datetime.min.time(), tzinfo=jst)
+                        + timedelta(hours=17),
+                        {
                             "食事": rng.choice(["全量", "8割", "半量"]),
                             "排便": rng.choice(["あり", "なし"]),
                             "睡眠": rng.choice(["良好", "中途覚醒あり"]),
                         },
-                        input_free=rng.choice(sc["free_input"]),
-                        content_ai=None,  # 過去記録は人手で書かれた想定
-                        content_final=_build_soap(sc, vitals, i, total_days),
-                        status="confirmed",
-                        author_id=author.id,
-                        confirmed_at=datetime.combine(
-                            rec_date, datetime.min.time(), tzinfo=timezone.utc
+                        rng.choice(sc["free_input"]),
+                    ),
+                    (
+                        SHIFT_NIGHT,
+                        night_author,
+                        datetime.combine(rec_date, datetime.min.time(), tzinfo=jst)
+                        + timedelta(days=1, hours=8, minutes=30),
+                        {
+                            "睡眠": rng.choice(["良好", "中途覚醒あり"]),
+                            "疼痛": rng.choice(["なし", "安静時軽度"]),
+                            "巡視": "異常なし",
+                        },
+                        rng.choice(NIGHT_FREE),
+                    ),
+                ):
+                    vitals = _make_vitals(sc["vitals_base"], i, total_days)
+                    if shift == SHIFT_NIGHT:
+                        vitals = {
+                            **vitals,
+                            "hr": vitals["hr"] + rng.choice([-4, -2, 2]),
+                            "rr": max(10, vitals["rr"] + rng.choice([-1, 0, 1])),
+                        }
+                    session.add(
+                        NursingNote(
+                            admission_id=admission.id,
+                            record_date=rec_date,
+                            shift=shift,
+                            format="SOAP",
+                            vitals=vitals,
+                            input_structured=structured,
+                            input_free=free_text,
+                            content_ai=None,  # 過去記録は人手で書かれた想定
+                            content_final=_build_soap(sc, vitals, shift),
+                            status="confirmed",
+                            author_id=author.id,
+                            confirmed_at=confirmed_at,
                         )
-                        + timedelta(hours=8),
                     )
-                )
-                note_count += 1
+                    note_count += 1
 
         # ---------------- 入院歴のない患者（患者マスタのみ）----------------
         # 「入院していない患者は担当一覧に出てこない」ことと、

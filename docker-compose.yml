@@ -41,13 +41,24 @@ services:
       SEED_ON_STARTUP: "true"
       TZ: Asia/Tokyo
       PYTHONPATH: /app
-    # M2 で LLM を繋ぐときに有効化する（ルートの .env は書式エラーがあるため使わない）
-    # env_file:
-    #   - .env.docker
+      # 既定はローカル。キーは空のまま。クラウドを使うときは値を入れて
+      # ALLOW_CLOUD_LLM を true にし、LLM_PROVIDER を deepseek か qwen にする。
+      LLM_PROVIDER: ollama
+      ALLOW_CLOUD_LLM: "false"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen3:8b
+      DEEPSEEK_API_KEY: ""
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      DEEPSEEK_MODEL: deepseek-chat
+      QWEN_API_KEY: ""
+      QWEN_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      QWEN_MODEL: qwen-plus
+      LANGSMITH_TRACING: "false"
     volumes:
       - ./backend:/app
+    # コンテナ内は 8000。ホストの 8000 台と 9000 は Windows の予約範囲に入ることがある。
     ports:
-      - "8000:8000"
+      - "9200:8000"
     depends_on:
       db:
         condition: service_healthy

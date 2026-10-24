@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -21,6 +22,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+# 二交代。1 日に日勤・夜勤の 2 件。三交代（準夜・深夜）は扱わない。
+SHIFT_DAY = "日勤"
+SHIFT_NIGHT = "夜勤"
+SHIFTS = (SHIFT_DAY, SHIFT_NIGHT)
 
 # ---------------------------------------------------------------- 看護師
 
@@ -49,15 +55,18 @@ class Nurse(Base):
 class Patient(Base):
     """患者マスタ
 
-    病棟・病室は「その患者が今どこにいるか」ではなく「どの入院でどこにいたか」
-    という情報なので、patients ではなく admissions 側に持たせている。
+    カルテ番号は入院・外来を問わず、その病院で患者を識別する番号。
+    入院レコードには持たせず、患者マスタに 1 人 1 つ置く。
+    外来受診だけの患者も、まだ入院していない患者も、同じ番号を持つ。
+
+    病棟・病室は「どの入院でどこにいたか」なので admissions 側に置く。
     未入院の患者は病棟を持たない。
     """
 
     __tablename__ = "patients"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    patient_no: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # 診察券番号
+    karte_no: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(64), index=True)
     name_kana: Mapped[str | None] = mapped_column(String(64), index=True)
     birth_date: Mapped[date | None] = mapped_column(Date)
@@ -129,6 +138,7 @@ class AdmissionAssessment(Base):
 class NursingNote(Base):
     """日々の看護記録
 
+    二交代のため、同じ入院・同じ日でも日勤と夜勤で 1 件ずつ、計 2 件になる。
     input_* が看護師の入力、content_ai が AI 生成結果、content_final が
     看護師が確認・修正して確定した最終版。記録責任は看護師にあるため、
     status = confirmed になるまでは正式な記録として扱わない。
@@ -139,6 +149,9 @@ class NursingNote(Base):
         UniqueConstraint(
             "admission_id", "record_date", "shift", name="uq_note_admission_date_shift"
         ),
+        CheckConstraint(
+            "shift IN ('日勤', '夜勤')", name="ck_nursing_notes_shift"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -146,7 +159,7 @@ class NursingNote(Base):
         ForeignKey("admissions.id", ondelete="CASCADE"), index=True
     )
     record_date: Mapped[date] = mapped_column(Date, index=True)
-    shift: Mapped[str] = mapped_column(String(8), default="日勤")  # 日勤 / 夜勤
+    shift: Mapped[str] = mapped_column(String(8), default=SHIFT_DAY)
     format: Mapped[str] = mapped_column(String(16), default="SOAP")  # SOAP / FOCUS / NARRATIVE
 
     # --- 看護師の入力 ---

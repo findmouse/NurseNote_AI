@@ -1,7 +1,12 @@
 """API のリクエスト / レスポンススキーマ"""
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.models import SHIFT_DAY
+
+Shift = Literal["日勤", "夜勤"]
 
 
 class ORMBase(BaseModel):
@@ -64,13 +69,22 @@ class DischargeRequest(BaseModel):
 
 
 class PatientCreate(BaseModel):
-    """患者マスタへの新規登録（初診・新規入院時）"""
+    """患者マスタへの新規登録。
+
+    カルテ番号は入院登録より前、外来受診の時点でも付く。
+    病院ですでに払い出されている番号があればそれを使い、無ければ自動採番する。
+    """
 
     name: str = Field(..., examples=["山口 一郎"])
     name_kana: str | None = Field(None, examples=["ヤマグチ イチロウ"])
     birth_date: date | None = None
     sex: str | None = Field(None, examples=["男性"])
-    patient_no: str | None = Field(None, description="省略時は自動採番")
+    karte_no: str | None = Field(
+        None,
+        max_length=32,
+        description="カルテ番号。入院・外来を問わない病院内の患者識別番号。省略時は自動採番",
+        examples=["P00123"],
+    )
 
 
 class AssessmentOut(ORMBase):
@@ -85,7 +99,7 @@ class AssessmentOut(ORMBase):
 
 class PatientOut(ORMBase):
     id: int
-    patient_no: str
+    karte_no: str
     name: str
     name_kana: str | None = None
     birth_date: date | None = None
@@ -109,13 +123,14 @@ class PatientDetail(PatientListItem):
 class NursingNoteOut(ORMBase):
     id: int
     record_date: date
-    shift: str
+    shift: Shift = SHIFT_DAY
     format: str
     vitals: dict | None = None
     input_structured: dict | None = None
     input_free: str | None = None
     content_ai: str | None = None
     content_final: str | None = None
+    evidence_spans: list | None = None
     status: str
     author_name: str | None = None
     confirmed_at: datetime | None = None
@@ -128,3 +143,31 @@ class NoteListResponse(BaseModel):
     admission_status: str = "never"
     days: int
     items: list[NursingNoteOut]
+
+
+class NoteGenerateRequest(BaseModel):
+    """本日の入力。記録日はサーバが当日（Asia/Tokyo）に決める。"""
+
+    patient_id: int
+    shift: Shift = SHIFT_DAY
+    format: Literal["SOAP", "FOCUS", "NARRATIVE"] = "SOAP"
+    vitals: dict | None = None
+    checks: list[str] = []
+    free_text: str | None = None
+
+
+class NoteConfirmRequest(BaseModel):
+    """生成結果を看護師が確認・修正して確定する。"""
+
+    patient_id: int
+    shift: Shift = SHIFT_DAY
+    format: Literal["SOAP", "FOCUS", "NARRATIVE"] = "SOAP"
+    vitals: dict | None = None
+    checks: list[str] = []
+    free_text: str | None = None
+    content_ai: str = ""
+    content_final: str = Field(..., min_length=1)
+    evidence: list[dict] = []
+    model_name: str | None = None
+    prompt_version: str | None = None
+    token_usage: dict | None = None
